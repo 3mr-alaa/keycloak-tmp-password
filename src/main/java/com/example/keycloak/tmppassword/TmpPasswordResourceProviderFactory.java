@@ -7,6 +7,9 @@ import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.models.utils.KeycloakModelUtils;
+import org.keycloak.models.utils.PostMigrationEvent;
+import org.keycloak.timer.TimerProvider;
 import org.keycloak.services.resource.RealmResourceProvider;
 import org.keycloak.services.resource.RealmResourceProviderFactory;
 
@@ -54,6 +57,21 @@ public class TmpPasswordResourceProviderFactory implements RealmResourceProvider
 
     @Override
     public void postInit(KeycloakSessionFactory factory) {
+        if (config.expirationMinutes() <= 0) {
+            return;
+        }
+        long intervalMillis = Math.max(5, config.cleanupIntervalSeconds()) * 1000L;
+        factory.register(event -> {
+            if (event instanceof PostMigrationEvent) {
+                KeycloakModelUtils.runJobInTransaction(factory, session -> {
+                    TimerProvider timer = session.getProvider(TimerProvider.class);
+                    TmpPasswordExpiry task = new TmpPasswordExpiry();
+                    timer.scheduleTask(task, intervalMillis, task.getTaskName());
+                });
+                LOG.infof("tmp-password: generated passwords expire after %d minutes (checked every %d s)",
+                        config.expirationMinutes(), intervalMillis / 1000);
+            }
+        });
     }
 
     @Override

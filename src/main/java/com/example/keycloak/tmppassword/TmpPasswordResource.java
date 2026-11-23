@@ -1,5 +1,7 @@
 package com.example.keycloak.tmppassword;
 
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import jakarta.ws.rs.ForbiddenException;
@@ -12,6 +14,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
 import org.jboss.logging.Logger;
+import org.keycloak.common.util.Time;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
 import org.keycloak.models.KeycloakSession;
@@ -34,7 +37,7 @@ import com.example.keycloak.tmppassword.sms.SmsSender;
  *
  * Requires an admin bearer token (the same one the Admin Console uses) whose owner
  * may manage the target user. Generates a password, stores it (temporary by default:
- * the user must change it at next login) and sends it to the user's phone by SMS.
+ * the user must change it at next login, and it expires after expiration-minutes) and sends it to the user's phone by SMS.
  * The password is never returned in the response.
  */
 public class TmpPasswordResource {
@@ -109,9 +112,18 @@ public class TmpPasswordResource {
             user.addRequiredAction(UserModel.RequiredAction.UPDATE_PASSWORD);
         }
 
+        Long expiresAt = null;
+        if (config.expirationMinutes() > 0) {
+            expiresAt = Time.currentTimeMillis() + config.expirationMinutes() * 60_000L;
+            TmpPasswordExpiry.track(user, expiresAt);
+        } else {
+            TmpPasswordExpiry.clear(user);
+        }
+
         String message = config.messageTemplate()
                 .replace("{password}", password)
                 .replace("{username}", user.getUsername())
+                .replace("{minutes}", Integer.toString(config.expirationMinutes()))
                 .replace("{realm}", realm.getDisplayName() != null ? realm.getDisplayName() : realm.getName());
 
         try {
@@ -133,10 +145,13 @@ public class TmpPasswordResource {
         LOG.infof("Temporary password sent by SMS to user %s (realm %s) by admin %s",
                 user.getUsername(), realm.getName(), auth.getUser().getUsername());
 
-        return Response.ok(Map.of(
-                "status", "sent",
-                "phone", mask(phone),
-                "temporary", config.temporary())).build();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", "sent");
+        body.put("phone", mask(phone));
+        body.put("temporary", config.temporary());
+        body.put("expiresAt", expiresAt == null ? null : Instant.ofEpochMilli(expiresAt).toString());
+        body.put("expiresInMinutes", expiresAt == null ? null : config.expirationMinutes());
+        return Response.ok(body).build();
     }
 
     private String generateValidPassword(RealmModel realm, UserModel user) throws PolicyException {

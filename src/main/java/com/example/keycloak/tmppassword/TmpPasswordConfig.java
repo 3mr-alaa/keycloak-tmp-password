@@ -22,7 +22,9 @@ public record TmpPasswordConfig(
         String messageTemplate,
         int passwordLength,
         boolean useSpecialChars,
-        boolean temporary) {
+        boolean temporary,
+        int expirationMinutes,
+        int cleanupIntervalSeconds) {
 
     public static final String MODE_HTTP = "http";
     public static final String MODE_LOG = "log";
@@ -38,9 +40,13 @@ public record TmpPasswordConfig(
                 c.get("sms-header-value"),
                 c.getInt("sms-timeout-seconds", 10),
                 c.get("phone-attribute", "phoneNumber"),
-                c.get("message-template", "Your temporary password for {realm} is: {password}"),
+                c.get("message-template", c.getInt("expiration-minutes", 60) > 0
+                        ? "Your temporary password for {realm} is: {password} (valid for {minutes} minutes)"
+                        : "Your temporary password for {realm} is: {password}"),
                 c.getInt("password-length", 10),
                 c.getBoolean("password-special-chars", true),
-                c.getBoolean("temporary", true));
+                c.getBoolean("temporary", true),
+                c.getInt("expiration-minutes", 60),
+                c.getInt("cleanup-interval-seconds", 60));
     }
 }

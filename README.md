@@ -6,8 +6,9 @@
 1. بيتعمل باسورد عشوائي (من غير حروف متشابهة زي `0/O` و`1/l`) ومتوافق مع الـ Password Policy بتاعة الـ realm.
 2. الباسورد بيتحفظ لليوزر كـ **temporary**، يعني هيُطلب منه يغيّره أول ما يعمل login (Required action: `UPDATE_PASSWORD`).
 3. الباسورد بيتبعت SMS على رقم اليوزر (attribute `phoneNumber`).
-4. لو الـ SMS فشل، تغيير الباسورد بيتلغي (rollback) والباسورد القديم بيفضل شغال.
-5. بيتسجل Admin Event (`ACTION` على `users/{id}/tmp-password`) لو Admin events متفعلة.
+4. الباسورد **بينتهي بعد ساعة** (قابلة للتغيير): لو اليوزر ما استخدموش وغيّره خلال الساعة، بيتمسح ومش هيقدر يدخل بيه، والأدمن يبعتله واحد جديد.
+5. لو الـ SMS فشل، تغيير الباسورد بيتلغي (rollback) والباسورد القديم بيفضل شغال.
+6. بيتسجل Admin Event (`ACTION` على `users/{id}/tmp-password`) لو Admin events متفعلة.
 
 الباسورد عمره ما بيرجع في الـ response ولا بيظهر للأدمن.
 
@@ -15,6 +16,7 @@
 
 | الجزء | الوصف |
 |---|---|
+| `TmpPasswordExpiry` | Scheduled task بيمسح الباسوردات المؤقتة اللي انتهت |
 | `TmpPasswordResource` | REST endpoint: `POST /realms/{realm}/tmp-password/users/{userId}` |
 | `HttpSmsSender` | بيبعت SMS لأي HTTP API (URL / method / body template / header قابلين للتهيئة) |
 | Theme `tmp-password-admin` | Admin theme مبني على `keycloak.v2` بيضيف الزرار |
@@ -91,10 +93,12 @@ KC_SPI_REALM_RESTAPI_EXTENSION__TMP_PASSWORD__<OPTION>   (الـ - تبقى _)
 | `sms-header-value` | — | قيمته (مثلاً `Bearer xxx` أو `Basic base64(user:pass)`) |
 | `sms-timeout-seconds` | `10` | |
 | `phone-attribute` | `phoneNumber` | اسم الـ user attribute اللي فيه رقم التليفون |
-| `message-template` | `Your temporary password for {realm} is: {password}` | نص الرسالة، متاح `{password}` و`{username}` و`{realm}` |
+| `message-template` | `Your temporary password for {realm} is: {password}` | نص الرسالة، متاح `{password}` و`{username}` و`{realm}` و`{minutes}`. لو الانتهاء شغال الـ default بيضيف `(valid for {minutes} minutes)` |
 | `password-length` | `10` | |
 | `password-special-chars` | `true` | يحط رموز (`@#$%&*!?`) ولا لأ |
 | `temporary` | `true` | يطلب من اليوزر يغيّر الباسورد بعد أول login |
+| `expiration-minutes` | `60` | مدة صلاحية الباسورد المؤقت بالدقايق. `0` يلغي الانتهاء |
+| `cleanup-interval-seconds` | `60` | كل قد إيه بيتفحص الباسوردات اللي انتهت |
 
 > الـ placeholders بتتكتب بقوس واحد `{phone}` مش `${phone}`، لأن Keycloak نفسه بيفسّر `${...}` في الـ config.
 
@@ -135,7 +139,7 @@ curl -X POST \
 
 | Status | المعنى |
 |---|---|
-| `200` | `{"status":"sent","phone":"**********567","temporary":true}` |
+| `200` | `{"status":"sent","phone":"**********567","temporary":true,"expiresAt":"2026-11-23T18:06:12Z","expiresInMinutes":60}` |
 | `400` | اليوزر مالوش رقم تليفون، أو الباسورد مش متوافق مع الـ policy |
 | `401` | مفيش token أو الـ token مش صالح |
 | `403` | الأدمن مالوش صلاحية على اليوزر ده |
@@ -148,12 +152,26 @@ curl -X POST \
   الـ script بياخد الـ access token من requests الـ console نفسه.
 - لو الـ Admin Console على hostname مختلف عن الـ server (`hostname-admin`)، الطلب هيبقى cross-origin ومحتاج CORS.
 - Keycloak بيطبع تحذير `KC-SERVICES0047` إن الـ `realm-restapi-extension` SPI داخلي؛ ده طبيعي لكل الإضافات اللي من النوع ده.
-- "مؤقت" هنا معناه إن اليوزر لازم يغيّره عند أول login. لو عايز الباسورد ينتهي بعد مدة كمان، محتاج Authenticator إضافي.
+
+## انتهاء الباسورد بيشتغل إزاي
+
+لما الباسورد بيتعمل، بيتحفظ على اليوزر 3 attributes:
+`tmp-password=pending`، `tmp-password-expires-at` (وقت الانتهاء)، و`tmp-password-created-at` (وقت إنشاء الـ credential).
+
+كل `cleanup-interval-seconds` فيه task بيدور على اليوزرز اللي عليهم `tmp-password=pending`:
+- لو الباسورد الحالي لسه هو المؤقت والوقت عدّى: **بيمسح الباسورد** ويشيل الـ attributes.
+- لو الباسورد اتغير (اليوزر غيّره بعد الـ login، أو أدمن عمل reset): بيشيل الـ attributes بس وما بيلمسش الباسورد الجديد.
+
+يعني الانتهاء بيحصل خلال `cleanup-interval-seconds` بعد الوقت المحدد (دقيقة بالـ default)، ومن غير ما تحتاج تعدّل أي Authentication flow.
+في الـ cluster الـ task بيشتغل على كل node، وده مش مشكلة لأن العملية نفسها idempotent.
+
+لو الـ attributes دي ظاهرة في تاب Attributes متمسحهاش، لأن من غيرها الباسورد مش هينتهي.
 
 ## الاختبار
 
 اتجرب على Keycloak 26.8.2: الزرار في الـ Admin Console، إرسال الـ SMS لـ HTTP mock server، تسجيل الدخول بالباسورد الجديد
-(بيطلب تغييره)، فحص الصلاحيات (401/403)، ورجوع الباسورد القديم لما الـ SMS يفشل.
+(بيطلب تغييره)، فحص الصلاحيات (401/403)، ورجوع الباسورد القديم لما الـ SMS يفشل،
+وانتهاء الباسورد (اتمسح بعد المدة، والباسورد اللي اتغير قبل الانتهاء فضل شغال).
 
 ```bash
 mvn test

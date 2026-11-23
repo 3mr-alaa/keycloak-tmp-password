@@ -116,7 +116,8 @@ async function generate(button) {
       /* empty or non-JSON body */
     }
     if (response.ok) {
-      showAlert("success", "Temporary password sent", `SMS sent to ${body.phone || "the user's phone"}.`);
+      const expiry = body.expiresInMinutes ? ` It expires in ${body.expiresInMinutes} minutes.` : "";
+      showAlert("success", "Temporary password sent", `SMS sent to ${body.phone || "the user's phone"}.${expiry}`);
     } else {
       showAlert("danger", "Could not generate temporary password", body.error || `HTTP ${response.status}`);
     }
