@@ -1,0 +1,8 @@
+{
+  "themes": [
+    {
+      "name": "tmp-password-admin",
+      "types": ["admin"]
+    }
+  ]
+}
